@@ -1,0 +1,61 @@
+import type { IModalFlowNavigatorConfig } from '@onekeyhq/components';
+import { LazyLoadPage } from '@onekeyhq/kit/src/components/LazyLoadPage';
+import type { IChainSelectorParamList } from '@onekeyhq/shared/src/routes';
+import { EChainSelectorPages } from '@onekeyhq/shared/src/routes';
+
+const TokenSelector = LazyLoadPage(
+  () => import('../../AssetSelector/pages/TokenSelector'),
+);
+
+const AccountChainSelector = LazyLoadPage(
+  () => import('../pages/AccountChainSelector'),
+);
+const ChainSelector = LazyLoadPage(() => import('../pages/ChainSelector'));
+
+const SettingCustomNetworkModal = LazyLoadPage(
+  () => import('@onekeyhq/kit/src/views/Setting/pages/CustomNetwork'),
+);
+
+const AllNetworksManager = LazyLoadPage(
+  () => import('../pages/AllNetworksManager'),
+);
+
+const ChainListSearch = LazyLoadPage(() => import('../pages/ChainListSearch'));
+
+const UnifiedNetworkSelector = LazyLoadPage(
+  () => import('../components/UnifiedNetworkSelector'),
+);
+
+export const ChainSelectorRouter: IModalFlowNavigatorConfig<
+  EChainSelectorPages,
+  IChainSelectorParamList
+>[] = [
+  {
+    name: EChainSelectorPages.AccountChainSelector,
+    component: AccountChainSelector,
+  },
+  {
+    name: EChainSelectorPages.TokenSelector,
+    component: TokenSelector,
+  },
+  {
+    name: EChainSelectorPages.ChainSelector,
+    component: ChainSelector,
+  },
+  {
+    name: EChainSelectorPages.ChainListSearch,
+    component: ChainListSearch,
+  },
+  {
+    name: EChainSelectorPages.AddCustomNetwork,
+    component: SettingCustomNetworkModal,
+  },
+  {
+    name: EChainSelectorPages.AllNetworksManager,
+    component: AllNetworksManager,
+  },
+  {
+    name: EChainSelectorPages.UnifiedNetworkSelector,
+    component: UnifiedNetworkSelector,
+  },
+];

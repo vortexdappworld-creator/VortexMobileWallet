@@ -1,0 +1,32 @@
+import { useIntl } from 'react-intl';
+
+import { Page } from '@onekeyhq/components';
+import { useHelpLink } from '@onekeyhq/kit/src/hooks/useHelpLink';
+import { ETranslations } from '@onekeyhq/shared/src/locale';
+import { defaultLogger } from '@onekeyhq/shared/src/logger/logger';
+import { openUrlExternal } from '@onekeyhq/shared/src/utils/openUrlUtils';
+
+import type { IUpdatePreviewActionButton } from './type';
+
+export const UpdatePreviewActionButton: IUpdatePreviewActionButton = () => {
+  const intl = useIntl();
+  const helpLink = useHelpLink({
+    path: 'articles/11461166',
+  });
+  return (
+    <Page.Footer
+      confirmButtonProps={{
+        onPress: () => {
+          defaultLogger.app.appUpdate.changelogUpdateClicked({
+            action: 'helpLink',
+          });
+          openUrlExternal(helpLink);
+        },
+        iconAfter: 'ArrowTopRightOutline',
+      }}
+      onConfirmText={intl.formatMessage({
+        id: ETranslations.update_manual_update,
+      })}
+    />
+  );
+};

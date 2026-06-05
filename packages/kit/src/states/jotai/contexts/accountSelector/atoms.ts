@@ -1,0 +1,246 @@
+import { useMemo } from 'react';
+
+import type {
+  IDBAccount,
+  IDBDevice,
+  IDBIndexedAccount,
+  IDBWallet,
+} from '@onekeyhq/kit-bg/src/dbs/local/types';
+import type { IAccountSelectorSelectedAccount } from '@onekeyhq/kit-bg/src/dbs/simple/entity/SimpleDbEntityAccountSelector';
+import type {
+  IAccountDeriveInfo,
+  IAccountDeriveInfoItems,
+  IAccountDeriveTypes,
+  IVaultSettings,
+} from '@onekeyhq/kit-bg/src/vaults/types';
+import { CONTEXT_ATOM_COLD_START_CACHE_KEYS } from '@onekeyhq/shared/src/consts/jotaiConsts';
+import { OneKeyLocalError } from '@onekeyhq/shared/src/errors';
+import { checkIsDefined } from '@onekeyhq/shared/src/utils/assertUtils';
+import type {
+  EAccountSelectorSceneName,
+  IServerNetwork,
+} from '@onekeyhq/shared/types';
+import type { INetworkAccount } from '@onekeyhq/shared/types/account';
+
+import { createJotaiContext } from '../../utils/createJotaiContext';
+
+// TODO save sceneName and sceneUrl to atom, so actions can get it
+export interface IAccountSelectorContextData {
+  sceneName: EAccountSelectorSceneName;
+  sceneUrl?: string;
+}
+export type IAccountSelectorRouteParams = IAccountSelectorContextData & {
+  num: number;
+};
+const {
+  Provider: AccountSelectorJotaiProvider,
+  useContextData: useAccountSelectorContextData,
+  contextAtom,
+  contextAtomMethod,
+} = createJotaiContext<IAccountSelectorContextData>();
+
+export const {
+  atom: accountSelectorContextDataAtom,
+  use: useAccountSelectorContextDataAtom,
+} = contextAtom<IAccountSelectorContextData | undefined>(undefined);
+
+export const defaultSelectedAccount: () => IAccountSelectorSelectedAccount =
+  () => ({
+    walletId: undefined,
+    indexedAccountId: undefined,
+    othersWalletAccountId: undefined,
+    networkId: undefined,
+    deriveType: undefined,
+    focusedWallet: undefined,
+  });
+export type ISelectedAccountsAtomMap = Partial<{
+  [num: number]: IAccountSelectorSelectedAccount;
+}>;
+export const { atom: selectedAccountsAtom, use: useSelectedAccountsAtom } =
+  contextAtom<ISelectedAccountsAtomMap>(
+    {
+      0: defaultSelectedAccount(),
+    },
+    {
+      coldStartCache: true,
+      coldStartCacheKey:
+        CONTEXT_ATOM_COLD_START_CACHE_KEYS.selectedAccountsAtom,
+    },
+  );
+
+// const atomInstance = selectedAccountsAtom();
+// const oldWrite = atomInstance.write;
+// atomInstance.write = (get, set, update) => {
+//   console.log('AccountSelectorAtomChanged selectedAccountsAtom write');
+//   oldWrite.call(atomInstance, get, set, update);
+// };
+
+export function useSelectedAccount({
+  num,
+  debugName,
+}: {
+  num: number;
+  debugName?: string;
+}): {
+  selectedAccount: IAccountSelectorSelectedAccount;
+  isSelectedAccountDefaultValue: boolean;
+} {
+  checkIsDefined(num);
+  const [selectedAccounts] = useSelectedAccountsAtom();
+  const selectedAccountOfNum = useMemo(
+    () => selectedAccounts[num],
+    [num, selectedAccounts],
+  );
+
+  if (debugName === 'HomePage') {
+    // console.log(
+    //   'AccountSelectorAtomChanged useSelectedAccount selectedAccountOfNum: ',
+    //   selectedAccountOfNum,
+    // );
+  }
+  return useMemo(() => {
+    let selectedAccount = selectedAccountOfNum;
+    let isSelectedAccountDefaultValue = false;
+    if (!selectedAccount) {
+      selectedAccount = defaultSelectedAccount();
+      isSelectedAccountDefaultValue = true;
+    }
+    return {
+      selectedAccount,
+      isSelectedAccountDefaultValue,
+    };
+  }, [selectedAccountOfNum]);
+}
+
+export const {
+  atom: accountSelectorEditModeAtom,
+  use: useAccountSelectorEditModeAtom,
+} = contextAtom<boolean>(false);
+
+export const {
+  atom: accountSelectorStorageReadyAtom,
+  use: useAccountSelectorStorageReadyAtom,
+} = contextAtom<boolean>(false, {
+  coldStartCache: true,
+  coldStartCacheKey:
+    CONTEXT_ATOM_COLD_START_CACHE_KEYS.accountSelectorStorageReadyAtom,
+});
+
+export type IAccountSelectorAvailableNetworks = {
+  networkIds?: string[];
+  defaultNetworkId?: string;
+};
+export type IAccountSelectorAvailableNetworksMap = Partial<{
+  [num: number]: IAccountSelectorAvailableNetworks;
+}>;
+export const {
+  atom: accountSelectorAvailableNetworksAtom,
+  use: useAccountSelectorAvailableNetworksAtom,
+} = contextAtom<IAccountSelectorAvailableNetworksMap>({
+  0: {},
+});
+export type IAccountSelectorUpdateMeta = {
+  eventEmitDisabled: boolean;
+  updatedAt: number;
+};
+export const {
+  atom: accountSelectorUpdateMetaAtom,
+  use: useAccountSelectorUpdateMetaAtom,
+} = contextAtom<
+  Partial<{
+    [num: number]: IAccountSelectorUpdateMeta;
+  }>
+>({});
+
+export type IAccountSelectorSyncLoadingMeta = {
+  isLoading: boolean;
+};
+export const {
+  atom: accountSelectorSyncLoadingAtom,
+  use: useAccountSelectorSyncLoadingAtom,
+} = contextAtom<
+  Partial<{
+    [num: number]: IAccountSelectorSyncLoadingMeta;
+  }>
+>({});
+
+export function useIsAccountSelectorSyncLoading(num: number): boolean {
+  const [syncLoading] = useAccountSelectorSyncLoadingAtom();
+  return !!syncLoading?.[num]?.isLoading;
+}
+
+export interface IAccountSelectorActiveAccountInfo {
+  ready: boolean;
+  isOthersWallet?: boolean;
+  account: INetworkAccount | undefined;
+  indexedAccount: IDBIndexedAccount | undefined;
+  dbAccount: IDBAccount | undefined;
+  accountName: string;
+  wallet: IDBWallet | undefined;
+  device: IDBDevice | undefined;
+  network: IServerNetwork | undefined;
+  vaultSettings: IVaultSettings | undefined;
+  deriveType: IAccountDeriveTypes | undefined;
+  deriveInfo?: IAccountDeriveInfo | undefined;
+  deriveInfoItems: IAccountDeriveInfoItems[];
+  canCreateAddress?: boolean;
+  isNetworkNotMatched?: boolean;
+}
+export const defaultActiveAccountInfo: () => IAccountSelectorActiveAccountInfo =
+  () => ({
+    account: undefined,
+    indexedAccount: undefined,
+    dbAccount: undefined,
+    accountName: '',
+    wallet: undefined,
+    device: undefined,
+    network: undefined,
+    vaultSettings: undefined,
+    deriveType: undefined,
+    deriveInfoItems: [],
+    ready: false,
+  });
+export const { atom: activeAccountsAtom, use: useActiveAccountsAtom } =
+  contextAtom<Partial<{ [num: number]: IAccountSelectorActiveAccountInfo }>>(
+    {
+      0: defaultActiveAccountInfo(),
+    },
+    {
+      coldStartCache: true,
+      coldStartCacheKey: CONTEXT_ATOM_COLD_START_CACHE_KEYS.activeAccountsAtom,
+    },
+  );
+
+export function useActiveAccount({ num }: { num: number }): {
+  activeAccount: IAccountSelectorActiveAccountInfo;
+} {
+  // TODO why add this deps for cosmos account model?
+  // const [selectedAccounts] = useSelectedAccountsAtom();
+  // noopObject(selectedAccounts);
+
+  const [accounts] = useActiveAccountsAtom();
+
+  return useMemo(() => {
+    const accountInfo = accounts[num];
+    const activeAccount = accountInfo || defaultActiveAccountInfo();
+    return {
+      activeAccount,
+    };
+  }, [accounts, num]);
+}
+
+export function useAccountSelectorSceneInfo() {
+  const { config } = useAccountSelectorContextData();
+  if (!config) {
+    throw new OneKeyLocalError(
+      'useAccountSelectorSceneInfo ERROR: context config not found',
+    );
+  }
+  return config;
+}
+
+export {
+  AccountSelectorJotaiProvider,
+  contextAtomMethod,
+  useAccountSelectorContextData,
+};

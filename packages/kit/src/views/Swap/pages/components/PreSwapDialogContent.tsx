@@ -1,0 +1,610 @@
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+
+import { isEqual } from 'lodash';
+import { useIntl } from 'react-intl';
+
+import {
+  Button,
+  Divider,
+  HeightTransition,
+  Icon,
+  Popover,
+  SizableText,
+  Stack,
+  XStack,
+  YStack,
+} from '@onekeyhq/components';
+import { useActiveAccount } from '@onekeyhq/kit/src/states/jotai/contexts/accountSelector';
+import {
+  useSwapStepNetFeeLevelAtom,
+  useSwapStepsAtom,
+} from '@onekeyhq/kit/src/states/jotai/contexts/swap';
+import {
+  filterSwapHistoryPendingList,
+  useInAppNotificationAtom,
+} from '@onekeyhq/kit-bg/src/states/jotai/atoms';
+import { ETranslations } from '@onekeyhq/shared/src/locale';
+import accountUtils from '@onekeyhq/shared/src/utils/accountUtils';
+import type { ICustomPriorityFeeOverride } from '@onekeyhq/shared/src/utils/marketPresetFeeUtils';
+import type {
+  ESwapNetworkFeeLevel,
+  IFetchLimitOrderRes,
+  IFetchQuoteResult,
+  IQuoteTip,
+  ISwapPreSwapData,
+  ISwapStep,
+  ISwapToken,
+  ISwapTxHistory,
+} from '@onekeyhq/shared/types/swap/types';
+import {
+  ESwapApproveTransactionStatus,
+  ESwapLimitOrderStatus,
+  ESwapStepStatus,
+  ESwapTabSwitchType,
+  ESwapTxHistoryStatus,
+} from '@onekeyhq/shared/types/swap/types';
+
+import PreSwapConfirmResult from '../../components/PreSwapConfirmResult';
+import PreSwapInfoGroup, {
+  type ISwapReviewNetworkFeeSelectValue,
+  SWAP_REVIEW_CUSTOM_NETWORK_FEE_VALUE,
+} from '../../components/PreSwapInfoGroup';
+import PreSwapStep from '../../components/PreSwapStep';
+import { PreSwapTipInfo } from '../../components/PreSwapTipInfo';
+import PreSwapTokenItem from '../../components/PreSwapTokenItem';
+import { resolveQuoteShowTip } from '../../utils/quoteShowTipUtils';
+
+interface IPreSwapDialogContentProps {
+  onConfirm: () => void;
+  onDone: () => void;
+  disableGlobalApproveSync?: boolean;
+  preSwapBeforeStepActions: (
+    data?: IFetchQuoteResult,
+    currentFromToken?: ISwapToken,
+    currentToToken?: ISwapToken,
+  ) => void | Promise<void>;
+  preSwapStepsStart: (swapStepsValues?: {
+    steps: ISwapStep[];
+    preSwapData: ISwapPreSwapData;
+    quoteResult?: IFetchQuoteResult;
+  }) => void | Promise<void>;
+  defaultNetworkFeeLevel?: ESwapNetworkFeeLevel;
+  defaultCustomPriorityFee?: ICustomPriorityFeeOverride;
+  showCustomNetworkFeeOption?: boolean;
+}
+
+const PreSwapDialogContent = ({
+  onDone,
+  onConfirm,
+  disableGlobalApproveSync = false,
+  preSwapBeforeStepActions,
+  preSwapStepsStart,
+  defaultNetworkFeeLevel,
+  defaultCustomPriorityFee,
+  showCustomNetworkFeeOption,
+}: IPreSwapDialogContentProps) => {
+  const intl = useIntl();
+  const [swapSteps, setSwapSteps] = useSwapStepsAtom();
+  const [swapStepNetFeeLevel, setSwapStepNetFeeLevel] =
+    useSwapStepNetFeeLevelAtom();
+  const effectiveCustomPriorityFee =
+    defaultCustomPriorityFee ?? swapStepNetFeeLevel.customPriorityFee;
+  const effectiveNetworkFeeLevel =
+    defaultNetworkFeeLevel ?? swapStepNetFeeLevel.networkFeeLevel;
+  const customNetworkFeeOption = useMemo(() => {
+    if (!showCustomNetworkFeeOption && !effectiveCustomPriorityFee) {
+      return undefined;
+    }
+
+    return {
+      label: intl.formatMessage({ id: ETranslations.transaction_custom }),
+      networkFeeLevel: effectiveNetworkFeeLevel,
+      customPriorityFee: effectiveCustomPriorityFee,
+    };
+  }, [
+    effectiveCustomPriorityFee,
+    effectiveNetworkFeeLevel,
+    intl,
+    showCustomNetworkFeeOption,
+  ]);
+  const [networkFeeSelectValue, setNetworkFeeSelectValue] =
+    useState<ISwapReviewNetworkFeeSelectValue>(
+      customNetworkFeeOption
+        ? SWAP_REVIEW_CUSTOM_NETWORK_FEE_VALUE
+        : effectiveNetworkFeeLevel,
+    );
+  const customNetworkFeeOptionRef = useRef(customNetworkFeeOption);
+  const customNetworkFeeOptionKey = useMemo(() => {
+    if (!customNetworkFeeOption) {
+      return undefined;
+    }
+
+    const customPriorityFee = customNetworkFeeOption.customPriorityFee;
+    return [
+      customNetworkFeeOption.label,
+      customNetworkFeeOption.networkFeeLevel,
+      customPriorityFee?.customValue ?? '',
+      customPriorityFee?.customRange?.min ?? '',
+      customPriorityFee?.customRange?.max ?? '',
+    ].join('|');
+  }, [customNetworkFeeOption]);
+  const initializedCustomNetworkFeeOptionKeyRef = useRef(
+    customNetworkFeeOptionKey,
+  );
+  useEffect(() => {
+    customNetworkFeeOptionRef.current = customNetworkFeeOption;
+
+    if (!customNetworkFeeOptionKey) {
+      if (networkFeeSelectValue === SWAP_REVIEW_CUSTOM_NETWORK_FEE_VALUE) {
+        setNetworkFeeSelectValue(swapStepNetFeeLevel.networkFeeLevel);
+      }
+      return;
+    }
+
+    if (
+      initializedCustomNetworkFeeOptionKeyRef.current !==
+      customNetworkFeeOptionKey
+    ) {
+      initializedCustomNetworkFeeOptionKeyRef.current =
+        customNetworkFeeOptionKey;
+      setNetworkFeeSelectValue(SWAP_REVIEW_CUSTOM_NETWORK_FEE_VALUE);
+    }
+  }, [
+    customNetworkFeeOption,
+    customNetworkFeeOptionKey,
+    networkFeeSelectValue,
+    swapStepNetFeeLevel.networkFeeLevel,
+  ]);
+  const swapStepsRef = useRef(swapSteps);
+  if (!isEqual(swapStepsRef.current, swapSteps)) {
+    swapStepsRef.current = swapSteps;
+  }
+  const { preSwapData, quoteResult } = useMemo(() => {
+    return {
+      preSwapData: swapSteps.preSwapData,
+      quoteResult: swapSteps.quoteResult,
+    };
+  }, [swapSteps]);
+  const { fromAmount, toAmount } = useMemo(() => {
+    return {
+      fromAmount: preSwapData?.fromTokenAmount || '0',
+      toAmount: preSwapData?.toTokenAmount || '0',
+    };
+  }, [preSwapData]);
+  const { activeAccount } = useActiveAccount({ num: 0 });
+  const isHwWallet = useMemo(
+    () =>
+      accountUtils.isHwWallet({
+        walletId: activeAccount?.wallet?.id ?? '',
+      }),
+    [activeAccount?.wallet?.id],
+  );
+  const isExternalAccount = useMemo(
+    () =>
+      accountUtils.isExternalWallet({
+        walletId: activeAccount?.wallet?.id ?? '',
+      }),
+    [activeAccount?.wallet?.id],
+  );
+
+  const [inAppNotificationAtom, setInAppNotificationAtom] =
+    useInAppNotificationAtom();
+
+  const [showPreSwapTipInfo, setShowPreSwapTipInfo] = useState<
+    IQuoteTip | undefined
+  >(undefined);
+
+  const validatedQuoteShowTip = useMemo(
+    () =>
+      resolveQuoteShowTip({
+        quoteShowTip: quoteResult?.quoteShowTip,
+        fromToken: preSwapData?.fromToken,
+        toToken: preSwapData?.toToken,
+        fromAmount,
+        toAmount,
+      }),
+    [
+      fromAmount,
+      preSwapData?.fromToken,
+      preSwapData?.toToken,
+      quoteResult?.quoteShowTip,
+      toAmount,
+    ],
+  );
+  const isPrimaryButtonDisabled = useMemo(
+    () =>
+      Boolean(
+        preSwapData?.estimateNetworkFeeLoading ||
+        preSwapData?.swapBuildLoading ||
+        preSwapData?.stepBeforeActionsLoading ||
+        preSwapData?.stepBeforeActionsError,
+      ),
+    [
+      preSwapData?.estimateNetworkFeeLoading,
+      preSwapData?.stepBeforeActionsError,
+      preSwapData?.stepBeforeActionsLoading,
+      preSwapData?.swapBuildLoading,
+    ],
+  );
+
+  const handleConfirmPress = useCallback(() => {
+    if (isPrimaryButtonDisabled) {
+      return;
+    }
+    if (validatedQuoteShowTip) {
+      setShowPreSwapTipInfo(validatedQuoteShowTip);
+    } else {
+      onConfirm();
+    }
+  }, [isPrimaryButtonDisabled, onConfirm, validatedQuoteShowTip]);
+
+  const tipOnConfirm = useCallback(() => {
+    if (isPrimaryButtonDisabled) {
+      return;
+    }
+    onConfirm();
+    setShowPreSwapTipInfo(undefined);
+  }, [isPrimaryButtonDisabled, onConfirm]);
+  const tipOnCancel = useCallback(() => {
+    setShowPreSwapTipInfo(undefined);
+  }, []);
+  useEffect(() => {
+    if (disableGlobalApproveSync) {
+      return;
+    }
+
+    if (
+      inAppNotificationAtom.swapApprovingTransaction &&
+      inAppNotificationAtom.swapApprovingTransaction.status !==
+        ESwapApproveTransactionStatus.PENDING
+    ) {
+      const approveStepStatus =
+        inAppNotificationAtom.swapApprovingTransaction.status ===
+        ESwapApproveTransactionStatus.SUCCESS
+          ? ESwapStepStatus.SUCCESS
+          : ESwapStepStatus.FAILED;
+      let updatedSteps: ISwapStep[] = [...swapSteps.steps];
+      setSwapSteps(
+        (prevSteps: { steps: ISwapStep[]; preSwapData: ISwapPreSwapData }) => {
+          const newSteps = [...prevSteps.steps];
+          const txId = inAppNotificationAtom.swapApprovingTransaction?.txId;
+
+          const stepIndex = newSteps.findIndex((step) => step.txHash === txId);
+
+          if (stepIndex !== -1) {
+            newSteps[stepIndex] = {
+              ...newSteps[stepIndex],
+              status: approveStepStatus,
+            };
+            updatedSteps = [...newSteps];
+          }
+
+          return {
+            ...prevSteps,
+            steps: newSteps,
+          };
+        },
+      );
+      setInAppNotificationAtom((prev) => {
+        return {
+          ...prev,
+          swapApprovingTransaction: undefined,
+        };
+      });
+      void preSwapStepsStart({
+        steps: [...updatedSteps],
+        preSwapData: swapSteps.preSwapData,
+        quoteResult: swapSteps.quoteResult as IFetchQuoteResult,
+      });
+    }
+  }, [
+    disableGlobalApproveSync,
+    inAppNotificationAtom.swapApprovingTransaction,
+    setSwapSteps,
+    preSwapStepsStart,
+    setInAppNotificationAtom,
+    swapSteps,
+  ]);
+
+  useLayoutEffect(() => {
+    if (
+      swapStepsRef.current.preSwapData.supportNetworkFeeLevel &&
+      swapStepsRef.current.preSwapData.supportPreBuild
+    ) {
+      void preSwapBeforeStepActions(
+        swapStepsRef.current.quoteResult,
+        swapStepsRef.current.preSwapData.fromToken,
+        swapStepsRef.current.preSwapData.toToken,
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    swapStepNetFeeLevel.networkFeeLevel,
+    swapStepNetFeeLevel.customPriorityFee?.customValue,
+  ]);
+
+  const handleSelectNetworkFeeLevel = useCallback(
+    (value: ISwapReviewNetworkFeeSelectValue) => {
+      if (value === SWAP_REVIEW_CUSTOM_NETWORK_FEE_VALUE) {
+        const customNetworkFeeOptionValue = customNetworkFeeOptionRef.current;
+        if (!customNetworkFeeOptionValue) {
+          return;
+        }
+        setNetworkFeeSelectValue(SWAP_REVIEW_CUSTOM_NETWORK_FEE_VALUE);
+        setSwapStepNetFeeLevel({
+          networkFeeLevel: customNetworkFeeOptionValue.networkFeeLevel,
+          customPriorityFee: customNetworkFeeOptionValue.customPriorityFee,
+        });
+        return;
+      }
+
+      setNetworkFeeSelectValue(value);
+      setSwapStepNetFeeLevel({
+        networkFeeLevel: value,
+      });
+    },
+    [setSwapStepNetFeeLevel],
+  );
+
+  const lastStep = useMemo(() => {
+    return swapSteps.steps[swapSteps.steps.length - 1];
+  }, [swapSteps]);
+
+  useEffect(() => {
+    if (lastStep?.txHash || lastStep?.orderId) {
+      let findStepItem: ISwapTxHistory | IFetchLimitOrderRes | undefined;
+      if (preSwapData?.swapType !== ESwapTabSwitchType.LIMIT) {
+        findStepItem = filterSwapHistoryPendingList(
+          inAppNotificationAtom.swapHistoryPendingList,
+        ).find((item) =>
+          item.txInfo.useOrderId
+            ? item.txInfo.orderId === lastStep?.orderId
+            : item.txInfo.txId === lastStep?.txHash,
+        );
+      } else {
+        findStepItem = inAppNotificationAtom.swapLimitOrders.find(
+          (item) => item.orderId === lastStep?.orderId,
+        );
+      }
+      if (
+        findStepItem &&
+        preSwapData?.swapType !== ESwapTabSwitchType.LIMIT &&
+        findStepItem.status !== ESwapTxHistoryStatus.PENDING
+      ) {
+        let stepStatus = ESwapStepStatus.PENDING;
+        if (findStepItem.status === ESwapTxHistoryStatus.SUCCESS) {
+          stepStatus = ESwapStepStatus.SUCCESS;
+        } else if (findStepItem.status === ESwapTxHistoryStatus.FAILED) {
+          stepStatus = ESwapStepStatus.FAILED;
+        }
+        setSwapSteps(
+          (prevSteps: {
+            steps: ISwapStep[];
+            preSwapData: ISwapPreSwapData;
+          }) => {
+            const newSteps = [...prevSteps.steps];
+            newSteps[newSteps.length - 1] = {
+              ...newSteps[newSteps.length - 1],
+              status: stepStatus,
+            };
+            return {
+              ...prevSteps,
+              steps: newSteps,
+            };
+          },
+        );
+      } else if (
+        findStepItem &&
+        preSwapData?.swapType === ESwapTabSwitchType.LIMIT &&
+        findStepItem.status !== ESwapLimitOrderStatus.OPEN &&
+        findStepItem.status !== ESwapLimitOrderStatus.PRESIGNATURE_PENDING
+      ) {
+        let stepStatus = ESwapStepStatus.PENDING;
+        if (
+          findStepItem.status === ESwapLimitOrderStatus.FULFILLED ||
+          findStepItem.status === ESwapLimitOrderStatus.PARTIALLY_FILLED
+        ) {
+          stepStatus = ESwapStepStatus.SUCCESS;
+        } else if (
+          findStepItem.status === ESwapLimitOrderStatus.CANCELLED ||
+          findStepItem.status === ESwapLimitOrderStatus.EXPIRED
+        ) {
+          stepStatus = ESwapStepStatus.FAILED;
+        }
+        setSwapSteps(
+          (prevSteps: {
+            steps: ISwapStep[];
+            preSwapData: ISwapPreSwapData;
+          }) => {
+            const newSteps = [...prevSteps.steps];
+            newSteps[newSteps.length - 1] = {
+              ...newSteps[newSteps.length - 1],
+              status: stepStatus,
+            };
+            return {
+              ...prevSteps,
+              steps: newSteps,
+            };
+          },
+        );
+      }
+    }
+  }, [
+    inAppNotificationAtom.swapHistoryPendingList,
+    inAppNotificationAtom.swapLimitOrders,
+    lastStep?.orderId,
+    lastStep?.txHash,
+    preSwapData?.swapType,
+    setSwapSteps,
+  ]);
+
+  const showResultContent = useMemo(() => {
+    if (swapSteps.steps.length > 0) {
+      return (
+        lastStep?.status !== ESwapStepStatus.READY &&
+        lastStep?.status !== ESwapStepStatus.LOADING
+      );
+    }
+  }, [lastStep?.status, swapSteps.steps.length]);
+
+  const actionBtnTest = useMemo(() => {
+    if (preSwapData?.isHWAndExBatchTransfer) {
+      if (isHwWallet) {
+        return intl.formatMessage({
+          id: quoteResult?.allowanceResult?.shouldResetApprove
+            ? ETranslations.swap_review_confirm_3_on_device
+            : ETranslations.swap_review_confirm_2_on_device,
+        });
+      }
+      if (isExternalAccount) {
+        return intl.formatMessage({
+          id: quoteResult?.allowanceResult?.shouldResetApprove
+            ? ETranslations.swap_review_confirm_3_on_wallet
+            : ETranslations.swap_review_confirm_2_on_wallet,
+        });
+      }
+    }
+    return intl.formatMessage({
+      id: isHwWallet
+        ? ETranslations.global_confirm_on_device
+        : ETranslations.global_confirm,
+    });
+  }, [
+    intl,
+    isExternalAccount,
+    isHwWallet,
+    preSwapData?.isHWAndExBatchTransfer,
+    quoteResult?.allowanceResult?.shouldResetApprove,
+  ]);
+
+  return (
+    <HeightTransition initialHeight={355}>
+      {showResultContent && swapSteps.steps.length > 0 ? (
+        <PreSwapConfirmResult
+          onConfirm={onDone}
+          fromToken={preSwapData?.fromToken}
+          supportUrl={quoteResult?.supportUrl}
+          lastStep={swapSteps.steps[swapSteps.steps.length - 1]}
+        />
+      ) : (
+        <YStack gap="$4">
+          {/* You pay */}
+          <YStack gap="$1">
+            <SizableText size="$bodyMd" color="$textSubdued">
+              {intl.formatMessage({ id: ETranslations.swap_review_you_pay })}
+            </SizableText>
+
+            {/* From token item */}
+            <PreSwapTokenItem
+              token={preSwapData?.fromToken}
+              amount={fromAmount}
+            />
+          </YStack>
+          {/* You received */}
+          <YStack gap="$1">
+            <XStack alignItems="center" gap="$1">
+              <SizableText size="$bodyMd" color="$textSubdued">
+                {intl.formatMessage({
+                  id: ETranslations.provider_sort_item_received,
+                })}
+              </SizableText>
+              <Popover
+                title={intl.formatMessage({
+                  id: ETranslations.provider_sort_item_received,
+                })}
+                renderTrigger={
+                  <Icon
+                    cursor="pointer"
+                    name="InfoCircleOutline"
+                    size="$3.5"
+                    color="$iconSubdued"
+                  />
+                }
+                renderContent={() => {
+                  return (
+                    <Stack p="$4">
+                      {quoteResult?.isFloating ? (
+                        <SizableText size="$bodyMd">
+                          {intl.formatMessage({
+                            id: ETranslations.provider_route_changelly_float,
+                          })}
+                        </SizableText>
+                      ) : (
+                        <SizableText size="$bodyMd">
+                          {intl.formatMessage({
+                            id: ETranslations.provider_ios_popover_onekey_fee_content_sub,
+                          })}
+                        </SizableText>
+                      )}
+                    </Stack>
+                  );
+                }}
+              />
+            </XStack>
+
+            {/* To token item */}
+            <PreSwapTokenItem
+              token={preSwapData?.toToken}
+              amount={toAmount}
+              loading={preSwapData.swapBuildLoading}
+              isFloating={quoteResult?.isFloating}
+              rateDifference={preSwapData.rateDifference}
+            />
+          </YStack>
+
+          <Divider />
+
+          {swapSteps.steps.length > 0 &&
+          swapSteps.steps[0].status === ESwapStepStatus.READY ? (
+            <YStack gap="$4">
+              {/* Info items */}
+              {showPreSwapTipInfo ? (
+                <PreSwapTipInfo
+                  quoteShowTip={showPreSwapTipInfo}
+                  onConfirm={tipOnConfirm}
+                  onCancel={tipOnCancel}
+                  fromToken={preSwapData?.fromToken}
+                  toToken={preSwapData?.toToken}
+                  fromAmount={fromAmount}
+                  toAmount={toAmount}
+                />
+              ) : (
+                <>
+                  <PreSwapInfoGroup
+                    preSwapData={swapSteps.preSwapData}
+                    onSelectNetworkFeeLevel={handleSelectNetworkFeeLevel}
+                    customNetworkFeeOptionLabel={
+                      customNetworkFeeOptionRef.current?.label
+                    }
+                    networkFeeSelectValue={networkFeeSelectValue}
+                  />
+                  {/* Primary button */}
+                  <Button
+                    testID="swap-btn"
+                    variant="primary"
+                    onPress={handleConfirmPress}
+                    size="medium"
+                    disabled={isPrimaryButtonDisabled}
+                  >
+                    {actionBtnTest}
+                  </Button>
+                </>
+              )}
+            </YStack>
+          ) : (
+            <PreSwapStep steps={swapSteps.steps} onRetry={onConfirm} />
+          )}
+        </YStack>
+      )}
+    </HeightTransition>
+  );
+};
+
+export default PreSwapDialogContent;

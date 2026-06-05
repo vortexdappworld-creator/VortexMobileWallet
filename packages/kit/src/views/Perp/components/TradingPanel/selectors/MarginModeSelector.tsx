@@ -1,0 +1,75 @@
+import { useMemo } from 'react';
+
+import { useIntl } from 'react-intl';
+
+import {
+  Icon,
+  SizableText,
+  XStack,
+  useInPageDialog,
+} from '@onekeyhq/components';
+import {
+  usePerpsActiveAssetAtom,
+  usePerpsActiveAssetDataAtom,
+} from '@onekeyhq/kit-bg/src/states/jotai/atoms';
+import { ETranslations } from '@onekeyhq/shared/src/locale';
+
+import { PerpTestIDs } from '../../../testIDs';
+import { showMarginModeDialog } from '../modals/MarginModeModal';
+
+interface IMarginModeSelectorProps {
+  disabled?: boolean;
+  isMobile?: boolean;
+}
+
+const MarginModeSelector = ({
+  disabled = false,
+  isMobile = false,
+}: IMarginModeSelectorProps) => {
+  const intl = useIntl();
+  const [activeAssetData] = usePerpsActiveAssetDataAtom();
+  const [selectedSymbol] = usePerpsActiveAssetAtom();
+
+  const currentModeLabel = useMemo(() => {
+    const currentMode = activeAssetData?.leverage?.type || 'isolated';
+    return currentMode === 'cross'
+      ? intl.formatMessage({ id: ETranslations.perp_trade_cross })
+      : intl.formatMessage({ id: ETranslations.perp_trade_isolated });
+  }, [activeAssetData?.leverage?.type, intl]);
+
+  const dialog = useInPageDialog();
+
+  const handlePress = () => {
+    if (disabled) return;
+    showMarginModeDialog(selectedSymbol?.coin, intl, dialog);
+  };
+
+  return (
+    <XStack
+      testID={PerpTestIDs.MarginModeSelector}
+      onPress={handlePress}
+      disabled={disabled}
+      height={isMobile ? 32 : 30}
+      bg={isMobile ? '$bgSubdued' : '$bgStrong'}
+      borderRadius="$2"
+      alignItems="center"
+      justifyContent="space-between"
+      px="$3"
+      cursor="default"
+      hoverStyle={{
+        bg: '$bgStrongHover',
+      }}
+      pressStyle={{
+        bg: '$bgStrongActive',
+      }}
+    >
+      <SizableText size="$bodyMdMedium">{currentModeLabel}</SizableText>
+
+      <Icon name="ChevronDownSmallOutline" color="$iconSubdued" size="$4" />
+    </XStack>
+  );
+};
+
+MarginModeSelector.displayName = 'MarginModeSelector';
+
+export { MarginModeSelector };

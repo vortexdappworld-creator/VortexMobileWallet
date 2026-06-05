@@ -1,0 +1,300 @@
+import type { Dispatch, SetStateAction } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
+
+import { Progress, Stack, useBackHandler } from '@onekeyhq/components';
+import WebView from '@onekeyhq/kit/src/components/WebView';
+import {
+  notifyTabNavigation,
+  notifyTabNavigationEnd,
+  tryDispatchTranslateMessage,
+} from '@onekeyhq/kit/src/components/WebView/translateBridge';
+import { handleDeepLinkUrl } from '@onekeyhq/kit/src/routes/config/deeplink';
+import {
+  homeTab,
+  useBrowserAction,
+  useBrowserTabActions,
+} from '@onekeyhq/kit/src/states/jotai/contexts/discovery';
+import { useSettingsFiatPaySiteWhitelistPersistAtom } from '@onekeyhq/kit-bg/src/states/jotai/atoms/settings';
+import platformEnv from '@onekeyhq/shared/src/platformEnv';
+import { EValidateUrlEnum } from '@onekeyhq/shared/types/dappConnection';
+
+import {
+  BITREFILL_BRIDGE_SCRIPT,
+  isBitrefillEmbedUrl,
+} from '../../utils/bitrefillUtils';
+import { webviewRefs } from '../../utils/explorerUtils';
+import { showTabBar } from '../../utils/tabBarUtils';
+import BlockAccessView from '../BlockAccessView';
+
+import type { IWebTab } from '../../types';
+import type { IJsBridgeReceiveHandler } from '@onekeyfe/cross-inpage-provider-types';
+import type {
+  WebView as ReactNativeWebview,
+  WebViewMessageEvent,
+  WebViewNavigation,
+  WebViewProps,
+} from 'react-native-webview';
+import type {
+  ShouldStartLoadRequest,
+  WebViewNavigationEvent,
+} from 'react-native-webview/lib/WebViewTypes';
+
+type IWebContentProps = IWebTab &
+  WebViewProps & {
+    isCurrent: boolean;
+    setBackEnabled: Dispatch<SetStateAction<boolean>>;
+    setForwardEnabled: Dispatch<SetStateAction<boolean>>;
+    customReceiveHandler?: IJsBridgeReceiveHandler;
+  };
+
+function WebContent({
+  id,
+  url,
+  isCurrent,
+  androidLayerType,
+  canGoBack,
+  setBackEnabled,
+  setForwardEnabled,
+  onScroll,
+  siteMode,
+  customReceiveHandler,
+}: IWebContentProps) {
+  const lastNavEventSnapshot = useRef('');
+  const showHome = url === homeTab.url;
+  const [progress, setProgress] = useState(5);
+  const [showBlockAccessView, setShowBlockAccessView] = useState(false);
+  const [urlValidateState, setUrlValidateState] = useState<EValidateUrlEnum>();
+  const [blockedUrl, setBlockedUrl] = useState<string>();
+  const [{ fiatPaySiteWhitelist }] =
+    useSettingsFiatPaySiteWhitelistPersistAtom();
+  const { onNavigation, gotoSite, validateWebviewSrc } =
+    useBrowserAction().current;
+  const { setWebTabData, closeWebTab, setCurrentWebTab } =
+    useBrowserTabActions().current;
+
+  const changeNavigationInfo = (siteInfo: WebViewNavigation) => {
+    setBackEnabled(siteInfo.canGoBack);
+    setForwardEnabled(siteInfo.canGoForward);
+  };
+
+  const onLoadStart = ({ nativeEvent }: WebViewNavigationEvent) => {
+    notifyTabNavigation(id);
+
+    if (
+      nativeEvent.url !== url &&
+      nativeEvent.loading &&
+      nativeEvent.navigationType === 'backforward'
+    ) {
+      changeNavigationInfo({ ...nativeEvent });
+    }
+  };
+
+  const onLoadEnd = ({ nativeEvent }: WebViewNavigationEvent) => {
+    if (nativeEvent.loading) {
+      return;
+    }
+    notifyTabNavigationEnd(id);
+    changeNavigationInfo({ ...nativeEvent });
+    // Inject Bitrefill bridge for raw postMessage → JSBridge forwarding.
+    if (isBitrefillEmbedUrl(nativeEvent.url)) {
+      const webview = webviewRefs[id]?.innerRef as
+        | ReactNativeWebview
+        | undefined;
+      try {
+        webview?.injectJavaScript?.(BITREFILL_BRIDGE_SCRIPT);
+      } catch {
+        // best-effort injection
+      }
+    }
+  };
+
+  const onNavigationStateChange = useCallback(
+    (navigationStateChangeEvent: WebViewNavigation) => {
+      // if (showHome) {
+      //   return;
+      // }
+      const snapshot = JSON.stringify(navigationStateChangeEvent);
+      if (snapshot === lastNavEventSnapshot.current) {
+        return;
+      }
+      lastNavEventSnapshot.current = snapshot;
+      const {
+        canGoBack: navCanGoBack,
+        canGoForward,
+        loading,
+        title,
+        url: navUrl,
+      } = navigationStateChangeEvent;
+
+      onNavigation({
+        url: navUrl,
+        title,
+        canGoBack: navCanGoBack,
+        canGoForward,
+        loading,
+        id,
+      });
+    },
+    [id, onNavigation],
+  );
+
+  const onShouldStartLoadWithRequest = useCallback(
+    (navigationStateChangeEvent: ShouldStartLoadRequest) => {
+      const { url: navUrl, isTopFrame } = navigationStateChangeEvent;
+      const validateState = validateWebviewSrc({
+        url: navUrl,
+        isTopFrame,
+      });
+      if (validateState === EValidateUrlEnum.Valid) {
+        return true;
+      }
+      if (validateState === EValidateUrlEnum.ValidDeeplink) {
+        handleDeepLinkUrl({ url: navUrl });
+        return false;
+      }
+      // Vortex fork — subresources/iframes that fail validation (e.g. HTTP
+      // analytics widgets a site embeds) used to trip the fullscreen
+      // "Connection is not private" overlay even when the top-frame URL was
+      // perfectly fine HTTPS. Mirror typical browser mixed-content behaviour:
+      // silently drop the offending subresource and only show the block UI
+      // when the top-frame navigation itself is rejected.
+      if (!isTopFrame) {
+        return false;
+      }
+      setShowBlockAccessView(true);
+      setUrlValidateState(validateState);
+      setBlockedUrl(navUrl);
+      return false;
+    },
+    [validateWebviewSrc],
+  );
+
+  const handleMessage = useCallback(
+    (event: WebViewMessageEvent) => {
+      tryDispatchTranslateMessage(id, event.nativeEvent.data);
+    },
+    [id],
+  );
+
+  useBackHandler(
+    useCallback(() => {
+      if (isCurrent && webviewRefs[id] && canGoBack && id !== homeTab.id) {
+        (webviewRefs[id]?.innerRef as ReactNativeWebview)?.goBack();
+        return true;
+      }
+      return false;
+    }, [canGoBack, id, isCurrent]),
+  );
+
+  const webview = useMemo(
+    () => (
+      <WebView
+        key={url}
+        siteMode={siteMode}
+        androidLayerType={androidLayerType}
+        pullToRefreshEnabled={!platformEnv.isNativeAndroid}
+        src={url}
+        mediaPermissionWhitelist={fiatPaySiteWhitelist}
+        customReceiveHandler={customReceiveHandler}
+        onWebViewRef={(ref) => {
+          if (ref && ref.innerRef) {
+            if (!webviewRefs[id]) {
+              setWebTabData({
+                id,
+                refReady: true,
+              });
+            }
+            if (id !== homeTab.id) {
+              webviewRefs[id] = ref;
+            }
+          }
+        }}
+        onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
+        onNavigationStateChange={onNavigationStateChange}
+        onOpenWindow={(e) => {
+          const { targetUrl } = e.nativeEvent;
+          const validateState = validateWebviewSrc({
+            url: targetUrl,
+            isTopFrame: true,
+          });
+          if (validateState === EValidateUrlEnum.ValidDeeplink) {
+            handleDeepLinkUrl({ url: targetUrl });
+          } else {
+            void gotoSite({
+              url: targetUrl,
+              siteMode,
+            });
+          }
+        }}
+        allowpopups
+        onMessage={handleMessage}
+        onLoadStart={onLoadStart}
+        onLoadEnd={onLoadEnd as any}
+        onScroll={onScroll}
+        displayProgressBar={false}
+        onProgress={(p) => setProgress(p)}
+      />
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      androidLayerType,
+      fiatPaySiteWhitelist,
+      gotoSite,
+      id,
+      showHome,
+      siteMode,
+      url,
+      customReceiveHandler,
+    ],
+  );
+
+  const progressBar = useMemo(() => {
+    if (progress < 100) {
+      return (
+        <Progress
+          value={progress}
+          width="100%"
+          position="absolute"
+          left={0}
+          top={0}
+          right={0}
+          zIndex={10}
+          borderRadius={0}
+        />
+      );
+    }
+    return null;
+  }, [progress]);
+
+  const blockAccessView = useMemo(
+    () => (
+      <Stack position="absolute" top={0} bottom={0} left={0} right={0}>
+        <BlockAccessView
+          url={blockedUrl}
+          urlValidateState={urlValidateState}
+          onCloseTab={() => {
+            closeWebTab({ tabId: id, entry: 'BlockView' });
+            setCurrentWebTab(null);
+            showTabBar();
+          }}
+          // onContinue={() => {
+          //   addUrlToPhishingCache({ url: phishingUrlRef.current });
+          //   setShowPhishingView(false);
+          //   onRefresh();
+          // }}
+        />
+      </Stack>
+    ),
+    [blockedUrl, id, closeWebTab, setCurrentWebTab, urlValidateState],
+  );
+
+  return (
+    <>
+      {progressBar}
+      {webview}
+      {showBlockAccessView ? blockAccessView : null}
+    </>
+  );
+}
+
+export default WebContent;

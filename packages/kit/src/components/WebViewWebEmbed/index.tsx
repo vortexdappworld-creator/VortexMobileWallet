@@ -1,0 +1,437 @@
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+import { SizableText, Stack, View, XStack } from '@onekeyhq/components';
+import backgroundApiProxy from '@onekeyhq/kit/src//background/instance/backgroundApiProxy';
+import { useDevSettingsPersistAtom } from '@onekeyhq/kit-bg/src/states/jotai/atoms/devSettings';
+import { useSettingsPersistAtom } from '@onekeyhq/kit-bg/src/states/jotai/atoms/settings';
+import { analytics } from '@onekeyhq/shared/src/analytics';
+import {
+  REVENUECAT_API_KEY_WEB,
+  REVENUECAT_API_KEY_WEB_SANDBOX,
+} from '@onekeyhq/shared/src/consts/primeConsts';
+import { EWebEmbedRoutePath } from '@onekeyhq/shared/src/consts/webEmbedConsts';
+import { OneKeyLocalError } from '@onekeyhq/shared/src/errors';
+import { defaultLogger } from '@onekeyhq/shared/src/logger/logger';
+import { BundleUpdate } from '@onekeyhq/shared/src/modules3rdParty/auto-update';
+import { captureException } from '@onekeyhq/shared/src/modules3rdParty/sentry';
+import { EWebEmbedPostMessageType } from '@onekeyhq/shared/src/modules3rdParty/webEmebd/postMessage';
+import platformEnv from '@onekeyhq/shared/src/platformEnv';
+import webEmbedConfig from '@onekeyhq/shared/src/storage/webEmbedConfig';
+import uriUtils from '@onekeyhq/shared/src/utils/uriUtils';
+import type { IWebEmbedOnekeyAppSettings } from '@onekeyhq/web-embed/utils/webEmbedAppSettings';
+
+import { useLocaleVariant } from '../../hooks/useLocaleVariant';
+import { useThemeVariant } from '../../hooks/useThemeVariant';
+import { GlobalJotaiReady } from '../GlobalJotaiReady/GlobalJotaiReady';
+import WebView from '../WebView';
+
+import type { JsBridgeBase } from '@onekeyfe/cross-inpage-provider-core';
+import type { IJsBridgeReceiveHandler } from '@onekeyfe/cross-inpage-provider-types';
+import type { IWebViewWrapperRef } from '@onekeyfe/onekey-cross-webview';
+import type { WebViewMessageEvent } from 'react-native-webview';
+import type { WebViewErrorEvent } from 'react-native-webview/lib/WebViewTypes';
+
+const initTop = '15%';
+// /onboarding/auto_typing
+export function WebViewWebEmbed({
+  isSingleton,
+  customReceiveHandler,
+  hashRoutePath,
+  hashRouteQueryParams,
+}: {
+  isSingleton?: boolean;
+  customReceiveHandler?: IJsBridgeReceiveHandler;
+  hashRoutePath?: EWebEmbedRoutePath;
+  hashRouteQueryParams?: Record<string, string>;
+}) {
+  const [settingsPersistAtom] = useSettingsPersistAtom();
+  const { instanceId } = settingsPersistAtom;
+
+  const webviewRef = useRef<IWebViewWrapperRef | null>(null);
+  const onWebViewRef = useCallback(($ref: IWebViewWrapperRef | null) => {
+    webviewRef.current = $ref;
+  }, []);
+  const [top, setTop] = useState(initTop);
+  const [minimized, setMinimized] = useState(false);
+  const config = useMemo(() => webEmbedConfig.getWebEmbedConfig(), []);
+  const themeVariant = useThemeVariant();
+  const localeVariant = useLocaleVariant();
+  const [devSettingsPersistAtom] = useDevSettingsPersistAtom();
+
+  const [revenuecatApiKey, setRevenuecatApiKey] = useState<string>('');
+
+  useEffect(() => {
+    async function getApiKey() {
+      try {
+        const devSettings =
+          await backgroundApiProxy.serviceDevSetting.getDevSetting();
+        let apiKey = REVENUECAT_API_KEY_WEB;
+        if (devSettings?.settings?.usePrimeSandboxPayment) {
+          apiKey = REVENUECAT_API_KEY_WEB_SANDBOX;
+        }
+        if (!apiKey) {
+          defaultLogger.app.webembed.webEmbedRevenuecatApiKey({
+            hasKey: false,
+            error: 'No REVENUECAT api key found',
+          });
+          throw new OneKeyLocalError('No REVENUECAT api key found');
+        }
+        defaultLogger.app.webembed.webEmbedRevenuecatApiKey({ hasKey: true });
+        setRevenuecatApiKey(apiKey);
+      } catch (error) {
+        defaultLogger.app.webembed.webEmbedRevenuecatApiKey({
+          hasKey: false,
+          error: String(error),
+        });
+      }
+    }
+    void getApiKey();
+  }, []);
+
+  const webEmbedAppSettings = useMemo<
+    IWebEmbedOnekeyAppSettings | undefined
+  >(() => {
+    defaultLogger.app.webembed.webEmbedAppSettingsResolved({
+      hasSettings: true,
+      hasTheme: !!themeVariant,
+      hasLocale: !!localeVariant,
+      hasApiKey: !!revenuecatApiKey,
+    });
+    if (!themeVariant || !localeVariant || !revenuecatApiKey) {
+      return undefined;
+    }
+    return {
+      $settings: settingsPersistAtom,
+      $devSettings: devSettingsPersistAtom,
+      isDev: platformEnv.isDev ?? false,
+      enableTestEndpoint:
+        (devSettingsPersistAtom.enabled &&
+          devSettingsPersistAtom.settings?.enableTestEndpoint) ??
+        false,
+      instanceId,
+      platform: platformEnv.symbol ?? '',
+      appBuildNumber: platformEnv.buildNumber ?? '',
+      appVersion: platformEnv.version ?? '',
+      themeVariant,
+      localeVariant,
+      revenuecatApiKey,
+    };
+  }, [
+    themeVariant,
+    localeVariant,
+    revenuecatApiKey,
+    settingsPersistAtom,
+    devSettingsPersistAtom,
+    instanceId,
+  ]);
+
+  const remoteUrl = useMemo(() => {
+    if (
+      process.env.NODE_ENV !== 'production' ||
+      devSettingsPersistAtom.enabled
+    ) {
+      if (config?.url) {
+        return config?.url;
+      }
+    }
+    return undefined;
+  }, [config?.url, devSettingsPersistAtom.enabled]);
+
+  const nativeWebviewSource = useMemo(() => {
+    if (remoteUrl) {
+      defaultLogger.app.webembed.webEmbedWebViewSource({
+        remoteUrl,
+      });
+      return undefined;
+    }
+    const webEmbedPath = BundleUpdate.getWebEmbedPath();
+    if (webEmbedPath) {
+      return {
+        uri: `file://${webEmbedPath}/index.html`,
+      };
+    }
+    // Android
+    if (platformEnv.isNativeAndroid) {
+      defaultLogger.app.webembed.webEmbedWebViewSource({
+        nativeUri: 'file:///android_asset/web-embed/index.html',
+      });
+      return {
+        uri: 'file:///android_asset/web-embed/index.html',
+      };
+    }
+    // iOS
+    if (platformEnv.isNativeIOS) {
+      defaultLogger.app.webembed.webEmbedWebViewSource({
+        nativeUri: 'web-embed/index.html',
+      });
+      return {
+        uri: 'web-embed/index.html',
+      };
+    }
+    defaultLogger.app.webembed.webEmbedWebViewSource({});
+    return undefined;
+  }, [remoteUrl]);
+
+  useEffect(() => {
+    defaultLogger.app.webembed.webEmbedWebViewUriChanged({
+      uri: nativeWebviewSource?.uri,
+      remoteUrl,
+    });
+  }, [nativeWebviewSource?.uri, remoteUrl]);
+
+  // Handle messages from WebView - only works in native environments
+  const handleMessage = useCallback((event?: WebViewMessageEvent) => {
+    if (event?.nativeEvent.data) {
+      let data:
+        | {
+            type: string;
+            data: any;
+          }
+        | undefined;
+      try {
+        data = JSON.parse(event.nativeEvent.data);
+      } catch (error) {
+        console.error(error);
+      }
+      if (!data) {
+        return;
+      }
+      switch (data.type) {
+        case EWebEmbedPostMessageType.TrackEvent:
+          {
+            const { eventName, eventProps } = data.data as {
+              eventName: string;
+              eventProps: Record<string, any>;
+            };
+            analytics.trackEvent(eventName, eventProps);
+          }
+
+          break;
+        case EWebEmbedPostMessageType.CaptureException: {
+          const { error, stackTrace } = data.data as {
+            error: string;
+            stackTrace: Record<string, string>;
+          };
+          if (error) {
+            const errorObj = new Error(error);
+            errorObj.stack = JSON.stringify(stackTrace);
+            captureException(errorObj);
+          }
+          break;
+        }
+        default:
+          break;
+      }
+    }
+  }, []);
+
+  const handleError = useCallback((event: WebViewErrorEvent) => {
+    const { code, description, url } = event?.nativeEvent || {};
+    defaultLogger.app.webembed.webViewOnError({
+      code: code || 0,
+      description: description || 'unknown',
+      url: url || 'unknown',
+    });
+  }, []);
+
+  const allowFileAccessByUrl = useMemo(() => {
+    const webEmbedPath = BundleUpdate.getWebEmbedPath();
+    return !!webEmbedPath || undefined;
+  }, []);
+
+  const iosAllowingReadAccessToURL = useMemo(() => {
+    if (platformEnv.isNativeIOS) {
+      const webEmbedPath = BundleUpdate.getWebEmbedPath();
+      if (webEmbedPath) {
+        return `file://${webEmbedPath}/`;
+      }
+    }
+    return undefined;
+  }, []);
+
+  const webview = useMemo(() => {
+    if (!webEmbedAppSettings) {
+      return null;
+    }
+    const fullHash = uriUtils.buildUrl({
+      path: hashRoutePath,
+      query: hashRouteQueryParams,
+    });
+    console.log('WebViewWebEmbed fullHash', hashRoutePath, fullHash);
+
+    if (
+      devSettingsPersistAtom.enabled &&
+      devSettingsPersistAtom.settings?.disableWebEmbedApi
+    ) {
+      return (
+        <SizableText>
+          WebEmbedApi is disabled, please enable it in dev settings
+        </SizableText>
+      );
+    }
+
+    defaultLogger.app.webembed.renderWebview();
+
+    return (
+      <WebView
+        allowFileAccess={allowFileAccessByUrl}
+        allowFileAccessFromFileURLs={allowFileAccessByUrl}
+        allowingReadAccessToURL={iosAllowingReadAccessToURL}
+        pullToRefreshEnabled={false}
+        useGeckoView={false}
+        // *** use remote url
+        src={remoteUrl || ''}
+        // *** use web-embed local html file
+        nativeWebviewSource={nativeWebviewSource}
+        onWebViewRef={onWebViewRef}
+        customReceiveHandler={customReceiveHandler}
+        onMessage={handleMessage}
+        onError={handleError}
+        nativeInjectedJavaScriptBeforeContentLoaded={`
+            window.location.hash = "${fullHash}";
+            const WEB_EMBED_ONEKEY_APP_SETTINGS = ${JSON.stringify(
+              webEmbedAppSettings,
+            )};
+            window.WEB_EMBED_ONEKEY_APP_SETTINGS = WEB_EMBED_ONEKEY_APP_SETTINGS;
+            if (typeof window !== 'undefined' && 'wrappedJSObject' in window) {
+              try {
+                window.wrappedJSObject.WEB_EMBED_ONEKEY_APP_SETTINGS = globalThis.cloneInto(
+                  WEB_EMBED_ONEKEY_APP_SETTINGS,
+                  window,
+                  {
+                    cloneFunctions: true
+                  }
+                );
+              } catch (error) {
+                console.error('cloneInto error', error);
+              }
+            }
+          `}
+      />
+    );
+  }, [
+    webEmbedAppSettings,
+    hashRoutePath,
+    hashRouteQueryParams,
+    devSettingsPersistAtom.enabled,
+    devSettingsPersistAtom.settings?.disableWebEmbedApi,
+    allowFileAccessByUrl,
+    iosAllowingReadAccessToURL,
+    remoteUrl,
+    nativeWebviewSource,
+    onWebViewRef,
+    customReceiveHandler,
+    handleMessage,
+    handleError,
+  ]);
+
+  useEffect(() => {
+    const jsBridge = webviewRef?.current?.jsBridge;
+    defaultLogger.app.webembed.webEmbedBridgeEffect({
+      isNative: !!platformEnv.isNative,
+      hasBridge: !!jsBridge,
+      hasWebview: !!webview,
+      hasSettings: !!webEmbedAppSettings,
+      bridgeGlobalOnMessageEnabled: jsBridge?.globalOnMessageEnabled,
+    });
+    if (!platformEnv.isNative) {
+      return;
+    }
+    if (!jsBridge) {
+      return;
+    }
+    if (!webview) {
+      return;
+    }
+    if (!webEmbedAppSettings) {
+      return;
+    }
+    jsBridge.globalOnMessageEnabled = true;
+    backgroundApiProxy.connectWebEmbedBridge(
+      jsBridge as unknown as JsBridgeBase,
+    );
+    return () => {
+      // Reset BG's canonical `isWebEmbedApiReady` alongside disconnecting the
+      // bridge. Without this, the next mount could see a stale BG ready and
+      // dispatch calls before the new page replays its `webEmbedApiReady`.
+      void backgroundApiProxy.serviceDApp.markWebEmbedApiNotReady();
+      backgroundApiProxy.connectWebEmbedBridge(null);
+    };
+  }, [webviewRef, webview, webEmbedAppSettings]);
+
+  const webviewUrlOrUri = useMemo(() => {
+    if (remoteUrl) {
+      return remoteUrl;
+    }
+    return nativeWebviewSource?.uri || '';
+  }, [nativeWebviewSource?.uri, remoteUrl]);
+
+  const debugViewSize = useMemo(() => {
+    if (config?.debug) {
+      if (minimized) {
+        return { width: '$8', height: '$6', borderWidth: 4 };
+      }
+      return { width: '90%', height: '$60', borderWidth: 4 };
+    }
+    return { width: 0, height: 0, borderWidth: 0 };
+  }, [config?.debug, minimized]);
+
+  if (!isSingleton) {
+    return webview;
+  }
+
+  return (
+    <View
+      width={debugViewSize.width}
+      height={debugViewSize.height}
+      borderWidth={debugViewSize.borderWidth}
+      overflow="hidden"
+      top={top}
+      left="5%"
+      position="absolute"
+      backgroundColor="$background"
+      borderColor="$border"
+    >
+      {config?.debug && webviewUrlOrUri ? (
+        <Stack>
+          <XStack borderBottomWidth={2} borderColor="$border">
+            <SizableText
+              px="$2"
+              size="$bodySm"
+              onPress={() => {
+                setMinimized((v) => !v);
+              }}
+            >
+              X
+            </SizableText>
+            <SizableText
+              flex={1}
+              onPress={() => {
+                setTop(top === initTop ? '70%' : initTop);
+              }}
+              size="$bodySm"
+            >
+              {webviewUrlOrUri}
+            </SizableText>
+          </XStack>
+        </Stack>
+      ) : null}
+      {webview}
+    </View>
+  );
+}
+
+function WebViewWebEmbedSingletonView() {
+  console.log('WebViewWebEmbedSingletonView render');
+  defaultLogger.app.webembed.renderWebviewSingleton();
+  return (
+    <GlobalJotaiReady>
+      <WebViewWebEmbed
+        isSingleton
+        hashRoutePath={EWebEmbedRoutePath.webEmbedApi}
+      />
+    </GlobalJotaiReady>
+  );
+}
+
+export const WebViewWebEmbedSingleton = memo(WebViewWebEmbedSingletonView);

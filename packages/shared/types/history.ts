@@ -1,0 +1,334 @@
+import type { ISizableTextProps } from '@onekeyhq/components';
+import type { ETranslations } from '@onekeyhq/shared/src/locale';
+
+import type { IAddressBadge, IAddressInfo } from './address';
+import type { ICurrencyItem } from './currency';
+import type { IAccountNFT } from './nft';
+import type { IStakingInfo } from './staking';
+import type { IToken } from './token';
+import type {
+  EDecodedTxStatus,
+  EReplaceTxMethod,
+  EReplaceTxType,
+  IDecodedTx,
+} from './tx';
+
+export enum EHistoryTxDetailsBlock {
+  Flow = 'Flow',
+  Attributes = 'Attributes',
+}
+
+export enum EOnChainHistoryTransferType {
+  Transfer,
+  Approve,
+}
+
+export enum EOnChainHistoryTxStatus {
+  Failed = '0',
+  Success = '1',
+  Pending = '2',
+}
+
+export enum EOnChainHistoryTxType {
+  Send = 'Send',
+  Receive = 'Receive',
+  Approve = 'Approve',
+}
+
+export type IOnChainHistoryTxApprove = {
+  amount: string;
+  spender: string;
+  token: string;
+  key: string;
+  isInfiniteAmount: boolean;
+};
+
+export type IOnChainHistoryTxTransfer = {
+  type: EOnChainHistoryTransferType;
+  from: string;
+  to: string;
+  token: string;
+  key: string;
+  amount: string;
+  label: string;
+  isNative?: boolean;
+  isOwn?: boolean; // for UTXO
+  comment?: string; // TON
+};
+
+export type IOnChainHistoryTxUTXOInput = {
+  txid: string;
+  vout: number;
+  sequence: number;
+  n: number;
+  addresses: string[];
+  isAddress: boolean;
+  value: string;
+  hex: string;
+};
+
+export type IOnChainHistoryTxUTXOOutput = {
+  value: string;
+  n: number;
+  spent: boolean;
+  spentTxId: string;
+  spentIndex: number;
+  spentHeight: number;
+  hex: string;
+  addresses: string[];
+  isAddress: boolean;
+};
+
+export type IOnChainHistoryTx = {
+  $key?: string;
+  key: string;
+  networkId: string;
+  tx: string;
+  riskLevel: number;
+  type: EOnChainHistoryTxType;
+  sends: IOnChainHistoryTxTransfer[];
+  receives: IOnChainHistoryTxTransfer[];
+  status: EOnChainHistoryTxStatus;
+  from: string;
+  to: string;
+  timestamp: number;
+  nonce: number;
+  gasFee: string;
+  gasFeeFiatValue: string;
+  functionCode: string;
+  params: string[];
+  value: string;
+  label: string;
+  confirmations?: number;
+  block?: number;
+  inputs?: IOnChainHistoryTxUTXOInput[];
+  outputs?: IOnChainHistoryTxUTXOOutput[];
+
+  tokenApprove?: IOnChainHistoryTxApprove;
+
+  tokenActive?: {
+    token: string;
+    from: string;
+  };
+
+  contractCall?: {
+    functionName?: string;
+  };
+
+  // TODO: on chain swap info
+  swapInfo?: any;
+
+  // Lightning network attributes
+  description?: string;
+  preimage?: string;
+
+  // Ripple
+  destinationTag?: number;
+  ledgerIndex?: number;
+  lastLedgerSequence?: number;
+
+  // Cosmos / Stellar
+  memo?: string;
+
+  // Dynex
+  paymentId?: string;
+
+  // TON
+  eventId?: string;
+
+  // Tron
+  receipt?: {
+    energyUsage?: number;
+    energyFee?: number;
+    energyUsageTotal?: number;
+    netUsage?: number;
+    netFee?: number;
+    netFeeCost?: number;
+  };
+
+  slicedData?: string;
+};
+
+export type IAccountHistoryTx = {
+  id: string; // historyId
+
+  key?: string;
+
+  isLocalCreated?: boolean;
+
+  replacedPrevId?: string; // cancel speedUp replacedId
+  replacedNextId?: string;
+  replacedType?: EReplaceTxType; // cancel speedUp
+  replacedMethod?: EReplaceTxMethod; // normal f2pool rbf
+
+  decodedTx: IDecodedTx;
+  stakingInfo?: IStakingInfo;
+
+  originalId?: string; // for ton
+};
+
+export type IHistoryListSectionGroup = {
+  title?: string;
+  titleKey?: ETranslations;
+  data: IAccountHistoryTx[];
+  titleProps?: ISizableTextProps;
+};
+
+export type IFetchAccountHistoryParams = {
+  accountId: string;
+  networkId: string;
+  tokenIdOnNetwork?: string;
+  isAllNetworks?: boolean;
+  isManualRefresh?: boolean;
+  filterScam?: boolean;
+  filterLowValue?: boolean;
+  excludeTestNetwork?: boolean;
+  sourceCurrency?: string;
+  targetCurrency?: string;
+  currencyMap?: Record<string, ICurrencyItem>;
+  limit?: number;
+  // Pagination & time range. First page passes page=1 and no cursor.
+  // Subsequent pages pass page=N and cursor=previous response.next.
+  page?: number;
+  cursor?: string;
+  minTimestampMs?: number;
+  maxTimestampMs?: number;
+};
+
+// Aggregated history fetch for chains whose vault has
+// `mergeDeriveAssetsEnabled: true` (e.g. BTC / LTC). One indexed account fans
+// out into multiple network accounts (one per deriveType), each with its own
+// xpub and its own pagination cursor. The opaque `cursor` returned to callers
+// is a JSON-encoded Record<deriveType, perTypeCursor | '__exhausted__'> — the
+// background service decodes it, calls each non-exhausted deriveType in
+// parallel, and re-encodes the next cursor map for the next page.
+export type IFetchMergeDeriveAccountHistoryParams = {
+  indexedAccountId: string;
+  networkId: string;
+  tokenIdOnNetwork?: string;
+  isManualRefresh?: boolean;
+  filterScam?: boolean;
+  filterLowValue?: boolean;
+  excludeTestNetwork?: boolean;
+  sourceCurrency?: string;
+  targetCurrency?: string;
+  currencyMap?: Record<string, ICurrencyItem>;
+  limit?: number;
+  page?: number;
+  cursor?: string;
+};
+
+export type IOnChainHistoryTxToken = {
+  info: IToken;
+  price: string;
+};
+
+export type IOnChainHistoryTxNFT = IAccountNFT;
+
+export type IFetchAccountHistoryResp = {
+  data: IOnChainHistoryTx[];
+  tokens: Record<string, IOnChainHistoryTxToken>; // <tokenAddress, token>
+  nfts: Record<string, IOnChainHistoryTxNFT>; // <nftAddress, nft>
+  addressMap?: Record<string, IAddressBadge>; // <networkId_address, {label, tip, type}>
+  hasMore?: boolean;
+  next?: string; // Cursor for the next page; pass back as request `cursor`.
+};
+
+export type IFetchHistoryTxDetailsParams = {
+  accountId: string;
+  networkId: string;
+  txid: string;
+  withUTXOs?: boolean;
+  accountAddress?: string;
+  xpub?: string;
+  fixConfirmedTxStatus?: boolean;
+};
+
+export type IFetchTxDetailsParams = {
+  networkId: string;
+  txid: string;
+  accountId: string;
+};
+
+export type IFetchHistoryTxDetailsResp = {
+  data: IOnChainHistoryTx;
+  tokens: Record<string, IOnChainHistoryTxToken>; // <tokenAddress, token>
+  nfts: Record<string, IOnChainHistoryTxNFT>; // <nftAddress, nft>
+  addressMap?: Record<string, IAddressInfo>; // <networkId_address, {label, tip, type}>
+};
+
+export type IHistoryTxMetaProps = {
+  decodedTx: IDecodedTx;
+  txDetails?: IOnChainHistoryTx;
+  addressMap?: Record<string, IAddressInfo>;
+};
+
+export type IHistoryTxMetaComponents = {
+  [EHistoryTxDetailsBlock.Flow]?: (
+    props: IHistoryTxMetaProps,
+  ) => JSX.Element | null;
+  [EHistoryTxDetailsBlock.Attributes]?: (
+    props: IHistoryTxMetaProps,
+  ) => JSX.Element | null;
+};
+
+export type IAllNetworkHistoryExtraItem = {
+  networkId: string;
+  accountId: string;
+  accountAddress: string;
+  accountXpub?: string;
+};
+
+export interface IServerFetchAccountHistoryDetailParams {
+  accountId: string;
+  networkId: string;
+  txid: string;
+  accountAddress?: string;
+  xpub?: string;
+}
+
+export interface IChangedPendingTxInfo {
+  accountId: string;
+  networkId: string;
+  txId: string;
+  status: EDecodedTxStatus;
+}
+
+export interface IServerFetchAccountHistoryDetailResp {
+  data: {
+    data: IFetchHistoryTxDetailsResp;
+  };
+}
+
+// Transfer Recipient API Types
+export interface ITransferRecipientBadge {
+  type: string;
+  title: string;
+  tip?: string;
+  icon?: string;
+}
+
+export interface ITransferRecipient {
+  address: string;
+  networkId?: string;
+  time: number;
+  label?: string;
+  amount?: string;
+  symbol?: string;
+  memo?: string;
+  isContract?: boolean;
+  isCex?: boolean;
+  isScam?: boolean;
+  badges?: ITransferRecipientBadge[];
+}
+
+export interface IFetchTransferRecipientsParams {
+  networkId: string;
+  accountAddress: string;
+  limit?: number;
+}
+
+export interface IFetchTransferRecipientsResp {
+  supported: boolean;
+  data: ITransferRecipient[];
+}
